@@ -2,7 +2,6 @@
 
 import usb.core
 import usb.util
-import wx
 from enum import Enum, IntEnum, unique
 
 #
@@ -36,6 +35,10 @@ class InputType(Enum):
     return [str(t) for t in list(cls)]
 
 class Input(object):
+  # The Apogee bypasses the preamp for the two line types: the signal hits the
+  # converters at a fixed reference level and neither the software nor the
+  # front panel knob has any effect. Only the mic and instrument types expose a
+  # gain register.
   _level_range = {
     InputType.MICROPHONE: { 
       'max': 75,
@@ -52,20 +55,30 @@ class Input(object):
     self.index = index
     self.number = index + 1
     self._type = device.get_input_type(self)
-    self._level = device.get_input_level(self)
+    self.phantom_power_state = State.DISABLED
+    self._level = self._read_level()
     if self._type == InputType.MICROPHONE:
       self.phantom_power_state = device.get_phantom_power_state(self)
     self.phase_state = device.get_phase_state(self)
     self.softlimit_state = device.get_softlimit_state(self)
     self.group_state = device.get_group_state(self)
-    
+
+  def _read_level(self):
+    if not self.has_level_control:
+      return None
+    return self._device.get_input_level(self)
+
+  @property
+  def has_level_control(self):
+    return self._type in self._level_range
+
   @property
   def min_level(self):
-    return self._level_range[self._type]['min']
-  
+    return self._level_range.get(self._type, {}).get('min')
+
   @property
   def max_level(self):
-    return self._level_range[self._type]['max']
+    return self._level_range.get(self._type, {}).get('max')
     
   @property
   def type_(self):
@@ -76,6 +89,12 @@ class Input(object):
     new_type = InputType(value)
     self._device.set_input_type(self, new_type)
     self._type = new_type
+    # Changing the type changes the gain register and, when leaving microphone
+    # mode, drops the input out of the (device wide) phantom power state.
+    self._level = self._read_level()
+    self.phantom_power_state = State.DISABLED
+    if new_type == InputType.MICROPHONE:
+      self.phantom_power_state = self._device.get_phantom_power_state(self)
 
   @property
   def level(self):
@@ -83,6 +102,8 @@ class Input(object):
 
   @level.setter
   def level(self, value):
+    if not self.has_level_control:
+      return
     self._device.set_input_level(self, value)
     self._level = value
     
@@ -201,11 +222,11 @@ class Output(object):
     self._level = value
 
   @property
-  def spekaer_output_type(self):
+  def speaker_output_type(self):
     return self._speaker_output_type    
-    
-  @spekaer_output_type.setter
-  def spekaer_output_type(self, value):
+
+  @speaker_output_type.setter
+  def speaker_output_type(self, value):
     new_type = SpeakerOutputType(value)
     self._device.set_speaker_output_type(self, new_type)
     self._speaker_output_type = new_type
@@ -367,7 +388,37 @@ class ApogeeDuet(object):
       Channel(device=self, index=2, type_=ChannelType.SOFTWARE_RETURN),  # Software Return
       Channel(device=self, index=3, type_=ChannelType.MASTER)   # Mixer Master
     ]
+
+  # The descriptive strings live in USB string descriptors, which some devices
+  # refuse to hand out; the panel can live without them.
+  @property
+  def product_name(self):
+    try:
+      return self._dev.product
+    except usb.core.USBError:
+      return None
+
+  @property
+  def serial_number(self):
+    try:
+      return self._dev.serial_number
+    except usb.core.USBError:
+      return None
   
+  # The Duet drops roughly one control transfer in a thousand with a USB I/O
+  # error. Every register this driver touches holds an absolute value rather
+  # than a delta, so re-sending a failed transfer cannot double apply it and
+  # keeps a stray error from surfacing in the middle of a fader drag.
+  _TRANSFER_ATTEMPTS = 2
+
+  def _transfer(self, bmRequestType, bmRequest, wValue, wIndex, payload):
+    for attempt in range(self._TRANSFER_ATTEMPTS):
+      try:
+        return self._dev.ctrl_transfer(bmRequestType, bmRequest, wValue, wIndex, payload)
+      except usb.core.USBError:
+        if attempt == self._TRANSFER_ATTEMPTS - 1:
+          raise
+
   # Every read USB control transfer with the Apogee seems to follow the same format, just one byte returned
   def _get_value_from_device(self, bmRquest=None, wIndex=None):
     assert bmRquest != None
@@ -375,7 +426,7 @@ class ApogeeDuet(object):
     bmRequestType = self._READ
     wValue = 0
     bytes_to_read = 1
-    ret = self._dev.ctrl_transfer(bmRequestType, bmRquest, wValue, wIndex, bytes_to_read)
+    ret = self._transfer(bmRequestType, bmRquest, wValue, wIndex, bytes_to_read)
     return ret[0]
     
   # The same here for every write USB control transfer
@@ -386,7 +437,7 @@ class ApogeeDuet(object):
     bmRequestType = self._WRITE
     wValue = 0
     message = [message]
-    assert self._dev.ctrl_transfer(bmRequestType, bmRequest, wValue, wIndex, message)
+    assert self._transfer(bmRequestType, bmRequest, wValue, wIndex, message)
   
   #
   # Mixer
@@ -502,17 +553,21 @@ class ApogeeDuet(object):
   # Inputs
   #
 
+  def _level_request(self, input_):
+    request = self._INPUT_REQUESTS['LEVEL'].get(input_.type_)
+    if request is None:
+      raise ValueError('{} inputs have no gain register'.format(input_.type_))
+    return request
+
   def get_input_level(self, input_=None):
     assert input_ != None
-    request = self._INPUT_REQUESTS['LEVEL'][input_.type_]
-    value = self._get_value_from_device(request, input_.index)
+    value = self._get_value_from_device(self._level_request(input_), input_.index)
     return value
   
   def set_input_level(self, input_=None, level=None):
     assert level != None
     assert input_ != None
-    request = self._INPUT_REQUESTS['LEVEL'][input_.type_]
-    self._set_value_on_device(request, input_.index, level)
+    self._set_value_on_device(self._level_request(input_), input_.index, level)
     
   def get_input_type(self, input_=None):
     assert input_ != None
@@ -560,241 +615,8 @@ class ApogeeDuet(object):
   
   def set_phantom_power_state(self, input_=None, state=None):
     self._set_value_on_device(self._INPUT_REQUESTS['PHANTOM_POWER'], input_.index, state.value)
-    
-#    
-# GUI code
-#
 
-apogee_device = None
-
-class InputPanel(wx.Panel):
-  def __init__(self, parent, input_):
-    wx.Panel.__init__(self, parent)
-    
-    self._parent = parent
-    self._input = input_
-    
-    csizer = wx.StaticBoxSizer(wx.VERTICAL, self, 'Input {}'.format(self._input.number))
-    c = wx.Choice(self, choices=InputType.str_list())
-    c.SetSelection(self._input.type_.value)
-    c.Bind(wx.EVT_CHOICE, self.on_input_type_changed)
-    csizer.Add(c, flag=wx.EXPAND)  
-    c = wx.ToggleButton(self, label='Phantom Power')
-    if self._input.type_ != InputType.MICROPHONE:
-      c.Disable()
-    else:
-      c.SetValue(self._input.phantom_power_state.value)
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_phantom_power_toggled)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.ToggleButton(self, label='Phase')
-    c.SetValue(input_.phase_state)
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_phase_toggled)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.ToggleButton(self, label='Soft Limit')
-    c.SetValue(input_.softlimit_state)
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_softlimit_toggled)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.ToggleButton(self, label='Group')
-    c.SetValue(input_.group_state)
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_group_toggled)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.SpinCtrl(self)
-    c.SetRange(input_.min_level, input_.max_level)
-    c.SetValue(input_.level)
-    c.Bind(wx.EVT_SPINCTRL, self.on_input_level_changed)
-    csizer.Add(c, flag=wx.EXPAND)
-    
-    self.SetSizer(csizer)
-    
-  def on_phantom_power_toggled(self, event):
-    self._input.toggle_phantom_power()
-    
-  def on_phase_toggled(self, event):
-    self._input.toggle_phase()
-    
-  def on_softlimit_toggled(self, event):
-    self._input.toggle_softlimit()
-
-  def on_group_toggled(self, event):
-    self._input.toggle_group()
-    self._parent.Update()
-    
-  def on_input_type_changed(self, event):
-    self._input.type_ = event.Int
-
-  def on_input_level_changed(self, event):
-    self._input.level = event.Int
-
-class InputsPage(wx.Panel):
-  def __init__(self, parent):
-    wx.Panel.__init__(self, parent)
-    
-    sizer = wx.BoxSizer(wx.HORIZONTAL)
-    
-    global apogee_device
-    for input_ in apogee_device.inputs:
-      input_panel = InputPanel(self, input_)
-      sizer.Add(input_panel, flag=wx.EXPAND|wx.ALL, border=10)
-    
-    self.SetSizer(sizer) 
-    
-class OutputPanel(wx.Panel):
-  def __init__(self, parent, output):
-    wx.Panel.__init__(self, parent)
-
-    self._output = output
-    
-    csizer = wx.StaticBoxSizer(wx.VERTICAL, self, '{}'.format(self._output.type_))
-    c = wx.Choice(self, choices=OutputSource.str_list())
-    c.SetSelection(self._output.source.value)
-    c.Bind(wx.EVT_CHOICE, self.on_source_changed)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.ToggleButton(self, label='Mute')
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_mute_toggled)
-    c.SetValue(self._output.mute_state)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.ToggleButton(self, label='Dim')
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_dim_toggled)
-    c.SetValue(self._output.dim_state)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.ToggleButton(self, label='Mono')
-    c.Bind(wx.EVT_TOGGLEBUTTON, self.on_mono_toggled)
-    c.SetValue(self._output.mono_state)
-    csizer.Add(c, flag=wx.EXPAND)
-    c = wx.SpinCtrl(self)
-    c.SetRange(self._output.min_level, self._output.max_level)
-    c.SetValue(self._output.level)
-    c.Bind(wx.EVT_SPINCTRL, self.on_output_level_changed)
-    csizer.Add(c, flag=wx.EXPAND)
-    if self._output.type_ == OutputType.SPEAKERS:
-      c = wx.Choice(self, choices=SpeakerOutputType.str_list())
-      c.SetSelection(self._output.spekaer_output_type.value)
-      c.Bind(wx.EVT_CHOICE, self.on_speaker_output_type_changed)
-      csizer.Add(c, flag=wx.EXPAND)
-    
-    self.SetSizer(csizer)
-
-  def on_mute_toggled(self, event):
-    self._output.toggle_mute()
-
-  def on_dim_toggled(self, event):
-    self._output.toggle_dim()
-
-  def on_mono_toggled(self, event):
-    self._output.toggle_mono()
-
-  def on_output_level_changed(self, event):
-    self._output.level = event.Int
-
-  def on_speaker_output_type_changed(self, event):
-    self._output.spekaer_output_type = event.Int
- 
-  def on_source_changed(self, event):
-    self._output.source = event.Int
-    
-class OutputsPage(wx.Panel):
-  def __init__(self, parent):
-    wx.Panel.__init__(self, parent)
-       
-    sizer = wx.BoxSizer(wx.HORIZONTAL)
-    
-    global apogee_device
-    for output in apogee_device.outputs:
-      output_panel = OutputPanel(self, output)
-      sizer.Add(output_panel, flag=wx.EXPAND|wx.ALL, border=10)
-    
-    self.SetSizer(sizer)
-    
-class ChannelPanel(wx.Panel):
-  def __init__(self, parent, channel):
-    wx.Panel.__init__(self, parent)
-
-    self._channel = channel
-    
-    csizer = wx.StaticBoxSizer(wx.VERTICAL, self, '{}'.format(self._channel.type_))
-    if self._channel.type_ == ChannelType.SOFTWARE_RETURN:
-      c = wx.Choice(self, choices=SoftwareReturnSource.str_list())
-      c.SetSelection(self._channel.source.value)
-      c.Bind(wx.EVT_CHOICE, self.on_source_changed)
-      csizer.Add(c, flag=wx.EXPAND)
-    if self._channel.type_ == ChannelType.INPUT:
-      c = wx.SpinCtrl(self)
-      c.SetRange(self._channel.min_pan, self._channel.max_pan)
-      c.SetValue(self._channel.pan)
-      c.Bind(wx.EVT_SPINCTRL, self.on_pan_value_changed)
-      csizer.Add(c, flag=wx.EXPAND)
-    if self._channel.type_ != ChannelType.MASTER:
-      c = wx.ToggleButton(self, label='Mute')
-      c.Bind(wx.EVT_TOGGLEBUTTON, self.on_mute_toggled)
-      c.SetValue(self._channel.mute_state)
-      csizer.Add(c, flag=wx.EXPAND)
-      c = wx.ToggleButton(self, label='Solo')
-      c.Bind(wx.EVT_TOGGLEBUTTON, self.on_solo_toggled)
-      c.SetValue(self._channel.solo_state)
-      csizer.Add(c, flag=wx.EXPAND)
-    c = wx.SpinCtrl(self)
-    c.SetRange(self._channel.min_level, self._channel.max_level)
-    c.SetValue(self._channel.level)
-    c.Bind(wx.EVT_SPINCTRL, self.on_channel_level_changed)
-    csizer.Add(c, flag=wx.EXPAND)
-    
-    self.SetSizer(csizer)
-
-  def on_source_changed(self, event):
-    self._channel.source = event.Int
-
-  def on_pan_value_changed(self, event):
-    self._channel.pan = event.Int
-
-  def on_channel_level_changed(self, event):
-    self._channel.level = event.Int
-
-  def on_mute_toggled(self, event):
-    self._channel.toggle_mute()
-
-  def on_solo_toggled(self, event):
-    self._channel.toggle_solo()
-
-class MixerPage(wx.Panel):
-  def __init__(self, parent):
-    wx.Panel.__init__(self, parent)
-
-    sizer = wx.BoxSizer(wx.HORIZONTAL)
-
-    global apogee_device
-    for channel in apogee_device.mixer_channels:
-      channel_panel = ChannelPanel(self, channel)
-      sizer.Add(channel_panel, flag=wx.EXPAND|wx.ALL, border=10)
-
-    self.SetSizer(sizer)
-
-class MainFrame(wx.Frame):
-  def __init__(self):
-    wx.Frame.__init__(self, None, title='Take control')
-    
-    try:
-      global apogee_device
-      apogee_device = ApogeeDuet()
-      
-      panel = wx.Panel(self)
-      notebook = wx.Notebook(panel)
-      
-      inputs_page = InputsPage(notebook)
-      outputs_page = OutputsPage(notebook)
-      mixer_page = MixerPage(notebook)
-      
-      notebook.AddPage(inputs_page, 'Inputs')
-      notebook.AddPage(outputs_page, 'Outputs')
-      notebook.AddPage(mixer_page, 'Mixer')
-      
-      sizer = wx.BoxSizer()
-      sizer.Add(notebook, flag=wx.EXPAND|wx.ALL)
-      panel.SetSizer(sizer)
-    except ValueError as e:
-      st = wx.StaticText(self, label=str(e))
-    
-    
 if __name__ == '__main__':
-  app = wx.App()
-  MainFrame().Show()
-  app.MainLoop()
+  import apogee_ui
+
+  apogee_ui.run()
