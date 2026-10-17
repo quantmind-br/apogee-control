@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Apogee Control",
+  "mainBinaryName": "apogee-control",
+  "identifier": "io.github.quantmind_br.ApogeeControl",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Apogee Duet Control",
+        "width": 1040,
+        "height": 600,
+        "minWidth": 900,
+        "minHeight": 560,
+        "backgroundColor": "#0d1015",
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "deb"
+    ],
+    "category": "AudioVideo",
+    "shortDescription": "Control panel for the Apogee Duet (USB)",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ]
+  }
+}

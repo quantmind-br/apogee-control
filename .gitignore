@@ -1,6 +1,6 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
+# Rust / Tauri build output
+/src-tauri/target/
+/src-tauri/gen/
 
 # Local agent/tooling state
 .omc/
