@@ -1,7 +1,7 @@
 // Apogee Duet control panel. The Rust side owns the USB protocol and the
 // device state; this module renders that state and sends changes back.
 
-import { caption, card, chip, fader, formatDb, h, knob, panLabel, readout, segmented, switchRow } from './widgets.js';
+import { caption, card, chip, fader, formatDb, h, knob, panLabel, readout, segmented, switchRow, volumeTaper } from './widgets.js';
 
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
@@ -178,7 +178,8 @@ function outputCard(index, writer, limits) {
     min: limits.outputLevel[0],
     max: limits.outputLevel[1],
     value: limits.outputLevel[0],
-    step: 16,
+    marks: [limits.outputLevel[0], -24, -12, -6, limits.outputLevel[1]],
+    taper: volumeTaper,
     label: `${speakers ? 'Speaker' : 'Headphone'} level`,
     onChange(value, final) {
       levelReadout.set(formatDb(value, 'dB'));

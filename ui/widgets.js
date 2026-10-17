@@ -30,6 +30,19 @@ export function formatDb(value, unit = '') {
 }
 
 /** Multiples of `step` inside the range, plus the ends when they stand apart. */
+// Track positions (0 at the bottom, 1 at the top) for a value in [low, high].
+const linearTaper = {
+  ratio: (value, low, high) => (high > low ? (value - low) / (high - low) : 0),
+  value: (ratio, low, high) => low + ratio * (high - low),
+};
+
+// PipeWire's volume curve (the amplitude is the volume cubed), so a dB fader
+// sits where the system volume slider does: the top is 100 %, -6 dB is 79 %.
+export const volumeTaper = {
+  ratio: (value, low, high) => 10 ** ((value - high) / 60),
+  value: (ratio, low, high) => Math.max(low, high + 60 * Math.log10(Math.max(ratio, 1e-6))),
+};
+
 function scaleMarks(low, high, step) {
   const marks = [];
   for (let mark = Math.ceil(low / step) * step; mark <= high; mark += step) marks.push(mark);
@@ -56,7 +69,7 @@ export function caption(text) {
 }
 
 /** Vertical fader; `onChange(value, final)` fires for every change. */
-export function fader({ min, max, value, step, label, signed = true, onChange }) {
+export function fader({ min, max, value, step, marks, taper = linearTaper, label, signed = true, onChange }) {
   let low = min;
   let high = max;
   let markStep = step;
@@ -77,7 +90,7 @@ export function fader({ min, max, value, step, label, signed = true, onChange })
     'aria-orientation': 'vertical',
   }, scale, rail);
 
-  const ratio = (number) => (high > low ? (number - low) / (high - low) : 0);
+  const ratio = (number) => taper.ratio(number, low, high);
   const format = (number, unit) => {
     if (signed) return formatDb(number, unit);
     return unit ? `${number} ${unit}` : String(number);
@@ -92,7 +105,7 @@ export function fader({ min, max, value, step, label, signed = true, onChange })
   }
 
   function paintScale() {
-    scale.replaceChildren(...scaleMarks(low, high, markStep).map((mark) => {
+    scale.replaceChildren(...(marks ?? scaleMarks(low, high, markStep)).map((mark) => {
       const tick = h('span', { class: 'fader-mark' }, format(mark));
       tick.style.setProperty('--ratio', ratio(mark));
       return tick;
@@ -112,7 +125,7 @@ export function fader({ min, max, value, step, label, signed = true, onChange })
     const inset = thumb.offsetHeight / 2 + 6;
     const span = box.height - 2 * inset;
     if (span <= 0) return low;
-    return low + clamp((box.bottom - inset - clientY) / span, 0, 1) * (high - low);
+    return taper.value(clamp((box.bottom - inset - clientY) / span, 0, 1), low, high);
   }
 
   element.addEventListener('pointerdown', (event) => {
