@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Apogee Control
+GenericName=Audio Interface Control
+Comment=Control panel for the Apogee Duet (USB)
+Exec=apogee-control
+Icon=apogee-control
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=apogee;duet;usb;audio;interface;mixer;gain;phantom;
+StartupWMClass=apogee-control
+StartupNotify=true

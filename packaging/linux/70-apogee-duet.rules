@@ -1,0 +1,3 @@
+# Apogee Duet (USB): let the user at the seat send the vendor control requests
+# the panel uses. "uaccess" must be tagged before 73-seat-late.rules runs.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0c60", ATTR{idProduct}=="0016", TAG+="uaccess"
