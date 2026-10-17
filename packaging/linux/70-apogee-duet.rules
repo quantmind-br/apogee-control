@@ -1,3 +1,7 @@
 # Apogee Duet (USB): let the user at the seat send the vendor control requests
 # the panel uses. "uaccess" must be tagged before 73-seat-late.rules runs.
 SUBSYSTEM=="usb", ATTR{idVendor}=="0c60", ATTR{idProduct}=="0016", TAG+="uaccess"
+
+# Use the Duet's ALSA card profile set (alsa-card-profile/profile-sets/apogee-duet.conf):
+# hardware volume on the speaker level, outputs 3-4 as auxiliary channels.
+SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="0c60", ATTRS{idProduct}=="0016", ENV{ACP_PROFILE_SET}="apogee-duet.conf"

@@ -19,17 +19,22 @@ Features
 
 System volume
 ---
-The speaker level and mute are also exposed by the kernel as the USB Audio Class control `Output Volume Control` (−64 to 0 dB, 1:1 with the panel's speaker fader):
+The speaker level and mute are also exposed by the kernel as the USB Audio Class control `Output Volume Control` (−64 to 0 dB, 1:1 with the panel's speaker fader). The udev rule in `packaging/linux` selects the ALSA card profile set shipped in `packaging/linux/alsa-card-profile`, which makes PipeWire drive that control as the sink's hardware volume: the system volume keys move the speaker fader, and the fader and the front knob move the system volume. The same profile set keeps outputs 3-4 as auxiliary channels, so stereo audio is no longer upmixed into them.
+
+To install it by hand (the package does this):
 
 ```sh
-amixer -c USB sset 'Output Volume Control' -- -12dB
+sudo install -Dm644 packaging/linux/alsa-card-profile/profile-sets/apogee-duet.conf -t /usr/share/alsa-card-profile/mixer/profile-sets
+sudo install -Dm644 packaging/linux/alsa-card-profile/paths/apogee-duet-output.conf -t /usr/share/alsa-card-profile/mixer/paths
 ```
 
-The headphone level has no USB Audio Class control and can only be changed through this panel or the front knob.
+then install the udev rule (see below), replug the Duet and restart WirePlumber (`systemctl --user restart wireplumber`).
+
+The headphone level has no USB Audio Class control and can only be changed through this panel or the front knob; with hardware volume, the system volume no longer attenuates the headphones.
 
 Install
 ---
-On Arch Linux, the `dsr-apogee-control-git` package from the [dsr-aur](https://github.com/quantmind-br/dsr-aur) repository installs the panel, its launcher entry and the udev rule:
+On Arch Linux, the `dsr-apogee-control-git` package from the [dsr-aur](https://github.com/quantmind-br/dsr-aur) repository installs the panel, its launcher entry, the udev rule and the ALSA card profile set:
 
 ```sh
 sudo pacman -Syu dsr-apogee-control-git
@@ -59,7 +64,7 @@ Tests: `cargo test` runs the protocol unit tests; `cargo test -- --ignored` also
 
 USB access without sudo
 ---
-Running as root is not recommended. Install the udev rule shipped in `packaging/linux`, which grants the logged-in user access to the device:
+Running as root is not recommended. Install the udev rule shipped in `packaging/linux`, which grants the logged-in user access to the device and selects the ALSA card profile set:
 
 ```sh
 sudo install -Dm644 packaging/linux/70-apogee-duet.rules /etc/udev/rules.d/70-apogee-duet.rules
